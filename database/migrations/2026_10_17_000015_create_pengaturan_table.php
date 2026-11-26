@@ -12,7 +12,7 @@ return new class extends Migration
     {
         Schema::create('pengaturan', function (Blueprint $table) {
             $table->string('kunci', 50)->primary();
-            $table->string('nilai', 255);
+            $table->text('nilai'); // text: cerita Tentang klub bisa sampai 600 karakter
             $table->timestamp('updated_at')->nullable();
         });
     }
