@@ -1,0 +1,96 @@
+name: Deploy demo ke InfinityFree
+
+# Setelah test di main lulus, build versi produksi lalu unggah lewat FTP ke htdocs.
+# Hanya file yang berubah sejak deploy terakhir yang dikirim (dicatat di .ftp-deploy-sync-state.json di server).
+# .env, .htaccess di htdocs, storage/ dan public/unggahan/ di server tidak pernah disentuh.
+# Migrasi database tetap manual lewat phpMyAdmin, karena InfinityFree tidak bisa menjalankan php artisan.
+#
+# Butuh secrets repo: FTP_SERVER, FTP_USERNAME, FTP_PASSWORD (dari "FTP Details" di panel InfinityFree).
+# Selama secrets belum diisi, workflow ini dilewati tanpa gagal.
+
+on:
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-infinityfree
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      ADA_FTP: ${{ secrets.FTP_SERVER != '' }}
+
+    steps:
+      - name: Lewati jika secrets FTP belum diisi
+        if: env.ADA_FTP != 'true'
+        run: echo "::notice::Secrets FTP_SERVER/FTP_USERNAME/FTP_PASSWORD belum diisi, deploy dilewati."
+
+      - name: Checkout code
+        if: env.ADA_FTP == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Setup PHP
+        if: env.ADA_FTP == 'true'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: dom, curl, libxml, mbstring, zip, pdo, pdo_mysql
+          coverage: none
+
+      - name: Setup Node
+        if: env.ADA_FTP == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # Autoload biasa (tanpa --optimize): InfinityFree menolak file PHP di atas 1 MB
+      - name: Install Composer dependencies (tanpa paket dev)
+        if: env.ADA_FTP == 'true'
+        run: |
+          composer install --no-dev --prefer-dist --no-interaction --no-progress
+          composer dump-autoload --no-dev
+
+      - name: Build assets
+        if: env.ADA_FTP == 'true'
+        run: npm ci && npm run build
+
+      - name: Pastikan tidak ada file PHP di atas 1 MB
+        if: env.ADA_FTP == 'true'
+        run: |
+          besar=$(find . -path ./node_modules -prune -o -name '*.php' -size +1000k -print)
+          if [ -n "$besar" ]; then echo "File PHP di atas 1 MB akan ditolak InfinityFree:"; echo "$besar"; exit 1; fi
+
+      - name: Unggah ke InfinityFree
+        if: env.ADA_FTP == 'true'
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          server-dir: /htdocs/
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/**
+            .github/**
+            tests/**
+            client/**
+            storage/**
+            public/unggahan/**
+            .env
+            .env.*
+            .editorconfig
+            phpunit.xml
